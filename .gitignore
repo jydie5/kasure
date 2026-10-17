@@ -1,0 +1,7 @@
+# 手元専用（アカウント ID・メールアドレス等を含む）
+infra/env.sh
+infra/role-policy.json
+infra/admin-create-user-config.json
+SETUP.local.md
+.DS_Store
+.claude/
