@@ -29,6 +29,12 @@ export function clientExtensions(): Extensions {
       addKeyboardShortcuts() {
         return {
           "Mod-Shift-w": () => toggleWidth(this.editor),
+          // ⌘K: 選択範囲があればバブルメニューのリンク入力を開く
+          "Mod-k": () => {
+            if (this.editor.state.selection.empty) return false;
+            document.dispatchEvent(new CustomEvent("kasure:link"));
+            return true;
+          },
           "Mod-Shift-m": () => this.editor.chain().focus().insertContent([{ type: "ma", attrs: { size: 2 } }, { type: "paragraph" }]).run(),
         };
       },

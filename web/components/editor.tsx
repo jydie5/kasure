@@ -77,16 +77,16 @@ export function Editor({ initial }: { initial: Note | null }) {
 
   // 画像のドロップ／貼り付けは editorProps から呼ばれるため、ref 経由で最新の関数を参照する
   const insertImagesRef = useRef<(files: File[], at?: number) => Promise<void>>(async () => {});
+  // useEditor は（Suspense で一時的に隠れるなどして）エディタを作り直すことがある。
+  // その時に初期値ではなく最新の本文（snapshot）で復元する。下書き復元と Markdown 変換は初回だけ
+  const initialized = useRef(false);
 
   const extensions = useMemo(() => [...clientExtensions(), slashApi.extension], [slashApi]);
 
-  const editor = useEditor({
-    extensions,
-    immediatelyRender: false,
-    content: initial?.doc ?? EMPTY_DOC,
-    editorProps: {
+  const editorProps = useMemo(
+    () => ({
       attributes: { class: "prose editor-prose", "aria-label": "本文", spellcheck: "false" },
-      handleDrop: (view, event) => {
+      handleDrop: (view: import("@tiptap/pm/view").EditorView, event: DragEvent) => {
         const files = [...(event.dataTransfer?.files ?? [])].filter((f) => f.type.startsWith("image/"));
         if (files.length === 0) return false;
         event.preventDefault();
@@ -94,15 +94,42 @@ export function Editor({ initial }: { initial: Note | null }) {
         void insertImagesRef.current(files, pos);
         return true;
       },
-      handlePaste: (_view, event) => {
+      handlePaste: (_view: unknown, event: ClipboardEvent) => {
         const files = [...(event.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
         if (files.length === 0) return false;
         event.preventDefault();
         void insertImagesRef.current(files);
         return true;
       },
-    },
+    }),
+    [],
+  );
+
+  const editor = useEditor({
+    extensions,
+    immediatelyRender: false,
+    // 作り直された時は最新の本文から始める（初回は保存済みの doc、なければ空）
+    content: snapshot,
+    editorProps,
     onCreate: ({ editor: e }) => {
+      if (initialized.current) return;
+      initialized.current = true;
+      // 保存されていない下書きがブラウザに残っていれば、それを優先して復元する
+      const draft = readDraft(initial?.id ?? null, initial?.updatedAt ?? null);
+      if (draft) {
+        e.commands.setContent(draft.doc, { emitUpdate: false });
+        setSnapshot(draft.doc);
+        setTitle(draft.title);
+        setTags(draft.tags);
+        setVisibility(draft.visibility);
+        setAccent(draft.accent);
+        setCoverKey(draft.coverKey);
+        setLayout(draft.layout);
+        setStatus("dirty");
+        version.current++;
+        flash("保存されていない下書きを復元しました");
+        return;
+      }
       // Markdown 時代のノートは、初回だけ Markdown から読み込む（保存すると JSON になる）
       if (initial && !initial.doc && initial.body) {
         e.commands.setContent(initial.body, { contentType: "markdown", emitUpdate: false });
@@ -115,6 +142,15 @@ export function Editor({ initial }: { initial: Note | null }) {
       if (!transaction.getMeta("paceWrite")) markDirty();
     },
   });
+
+  // 未保存の変更を 600ms おきにブラウザへ退避する（リロードや画面の作り直しに備える）
+  useEffect(() => {
+    if (status !== "dirty") return;
+    const t = window.setTimeout(() => {
+      writeDraft(id ?? null, { title, doc: snapshot, tags, visibility, accent, coverKey, layout, at: Date.now() });
+    }, 600);
+    return () => window.clearTimeout(t);
+  }, [status, id, title, snapshot, tags, visibility, accent, coverKey, layout]);
 
   const insertImages = useCallback(
     async (files: File[], at?: number) => {
@@ -176,7 +212,9 @@ export function Editor({ initial }: { initial: Note | null }) {
       }
       setSavedAt(new Date());
       setStatus(version.current === startedVersion ? "saved" : "dirty");
+      clearDraft(id ?? null);
       if (!id) {
+        clearDraft(null);
         setId(result.id);
         setSlug(result.slug);
         window.history.replaceState(null, "", `/notes/${result.id}/edit`);
@@ -237,6 +275,7 @@ export function Editor({ initial }: { initial: Note | null }) {
 
   const onDelete = () => {
     if (!id || !window.confirm("このノートを削除します。元に戻せません。")) return;
+    clearDraft(id);
     startTransition(() => deleteNote(id));
   };
 
@@ -482,6 +521,48 @@ export function Editor({ initial }: { initial: Note | null }) {
       )}
     </div>
   );
+}
+
+// ---- 未保存の下書き（ブラウザの localStorage。保存が成功したら消す）
+type Draft = {
+  title: string;
+  doc: JSONContent;
+  tags: string[];
+  visibility: "private" | "public";
+  accent: Accent;
+  coverKey: string | null;
+  layout: NoteLayout;
+  at: number;
+};
+const draftKey = (id: string | null) => `kasure:draft:${id ?? "new"}`;
+
+function readDraft(id: string | null, savedAt: string | null): Draft | null {
+  try {
+    const raw = localStorage.getItem(draftKey(id));
+    if (!raw) return null;
+    const draft = JSON.parse(raw) as Draft;
+    if (!draft?.doc || typeof draft.at !== "number") return null;
+    // 保存済みのノートより古い下書きは捨てる（別の端末で保存した場合など）
+    if (savedAt && draft.at < new Date(savedAt).getTime()) {
+      localStorage.removeItem(draftKey(id));
+      return null;
+    }
+    return draft;
+  } catch {
+    return null;
+  }
+}
+
+function writeDraft(id: string | null, draft: Draft) {
+  try {
+    localStorage.setItem(draftKey(id), JSON.stringify(draft));
+  } catch {}
+}
+
+function clearDraft(id: string | null) {
+  try {
+    localStorage.removeItem(draftKey(id));
+  } catch {}
 }
 
 // 読まれた回数を段落に結びつけるため、すべての段落に ID を持たせる

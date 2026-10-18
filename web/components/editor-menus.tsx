@@ -56,6 +56,14 @@ export function InkBubbleMenu({ editor }: { editor: Editor }) {
   useEffect(() => {
     if (group === "link") linkRef.current?.focus();
   }, [group]);
+  useEffect(() => {
+    const open = () => {
+      setLinkDraft((editor.getAttributes("link").href as string | undefined) ?? "");
+      setGroup("link");
+    };
+    document.addEventListener("kasure:link", open);
+    return () => document.removeEventListener("kasure:link", open);
+  }, [editor]);
 
   const setStyle = (attrs: Partial<{ ink: InkColor | null; size: InkSize | null; face: InkFace | null }>) =>
     editor.chain().focus().setMark("textStyle", attrs).removeEmptyTextStyle().run();
