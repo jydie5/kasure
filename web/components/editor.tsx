@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, useTransition } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkBreaks from "remark-breaks";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { EditorContent, useEditor } from "@tiptap/react";
+import { generateHTML, type JSONContent } from "@tiptap/core";
 import { deleteNote, saveNote, type SaveNoteInput } from "@/app/actions";
 import { ACCENTS, type Accent, type Note } from "@/lib/notes-types";
+import { buildExtensions, DEFAULT_LAYOUT, type NoteLayout } from "@/lib/editor-schema";
+import { clientExtensions } from "./editor-extensions";
+import { BlockFloatingMenu, InkBubbleMenu, LayoutPopover, SlashMenu, createSlashExtension, type SlashItem, type SlashState } from "./editor-menus";
 import { NoteGlyph } from "./note-glyph";
 
 type Mode = "write" | "split" | "read";
@@ -20,52 +22,150 @@ const STATUS_LABEL: Record<Status, string> = {
   saved: "保存しました",
   error: "保存できませんでした",
 };
+const EMPTY_DOC: JSONContent = { type: "doc", content: [{ type: "paragraph" }] };
 
 export function Editor({ initial }: { initial: Note | null }) {
   const [id, setId] = useState(initial?.id);
   const [slug, setSlug] = useState(initial?.slug);
   const [title, setTitle] = useState(initial?.title ?? "");
-  const [body, setBody] = useState(initial?.body ?? "");
   const [tags, setTags] = useState<string[]>(initial?.tags ?? []);
   const [tagDraft, setTagDraft] = useState("");
   const [visibility, setVisibility] = useState<"private" | "public">(initial?.visibility ?? "private");
   const [accent, setAccent] = useState<Accent>(initial?.accent ?? "shu");
   const [coverKey, setCoverKey] = useState<string | null>(initial?.coverKey ?? null);
+  const [layout, setLayout] = useState<NoteLayout>(initial?.layout ?? DEFAULT_LAYOUT);
+  const [layoutOpen, setLayoutOpen] = useState(false);
   const [mode, setMode] = useState<Mode>("write");
-  // 集中モード: カーソルのある段落だけ濃く、離れた段落ほど墨がかすれる
   const [focusInk, setFocusInk] = useState(true);
-  const [caret, setCaret] = useState<number | null>(null);
   const [status, setStatus] = useState<Status>(initial ? "saved" : "idle");
   const [savedAt, setSavedAt] = useState<Date | null>(initial ? new Date(initial.updatedAt) : null);
   const [dragging, setDragging] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<JSONContent>(initial?.doc ?? EMPTY_DOC);
   const [, startTransition] = useTransition();
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
   const coverInput = useRef<HTMLInputElement>(null);
+  const imageInput = useRef<HTMLInputElement>(null);
   const saving = useRef(false);
   const version = useRef(0);
+
+  // --- スラッシュメニューの状態（Suggestion プラグインから更新される）
+  const [slash, setSlash] = useState<SlashState | null>(null);
+  const slashApi = useMemo(() => createSlashExtension(setSlash), []);
 
   const flash = useCallback((message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(null), 2600);
   }, []);
 
-  const markDirty = () => {
+  const markDirty = useCallback(() => {
     version.current++;
     setStatus("dirty");
-  };
+  }, []);
+
+  const upload = useCallback(async (file: File) => {
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contentType: file.type, size: file.size }),
+    });
+    const data = (await res.json()) as { url?: string; key?: string; src?: string; error?: string };
+    if (!res.ok || !data.url) throw new Error(data.error ?? "アップロードできませんでした");
+    const put = await fetch(data.url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+    if (!put.ok) throw new Error("アップロードできませんでした");
+    return { key: data.key!, src: data.src! };
+  }, []);
+
+  // 画像のドロップ／貼り付けは editorProps から呼ばれるため、ref 経由で最新の関数を参照する
+  const insertImagesRef = useRef<(files: File[], at?: number) => Promise<void>>(async () => {});
+
+  const extensions = useMemo(() => [...clientExtensions(), slashApi.extension], [slashApi]);
+
+  const editor = useEditor({
+    extensions,
+    immediatelyRender: false,
+    content: initial?.doc ?? EMPTY_DOC,
+    editorProps: {
+      attributes: { class: "prose editor-prose", "aria-label": "本文", spellcheck: "false" },
+      handleDrop: (view, event) => {
+        const files = [...(event.dataTransfer?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+        if (files.length === 0) return false;
+        event.preventDefault();
+        const pos = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? view.state.selection.to;
+        void insertImagesRef.current(files, pos);
+        return true;
+      },
+      handlePaste: (_view, event) => {
+        const files = [...(event.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+        if (files.length === 0) return false;
+        event.preventDefault();
+        void insertImagesRef.current(files);
+        return true;
+      },
+    },
+    onCreate: ({ editor: e }) => {
+      // Markdown 時代のノートは、初回だけ Markdown から読み込む（保存すると JSON になる）
+      if (initial && !initial.doc && initial.body) {
+        e.commands.setContent(initial.body, { contentType: "markdown", emitUpdate: false });
+        setSnapshot(JSON.parse(JSON.stringify(e.getJSON())) as JSONContent);
+      }
+    },
+    onUpdate: ({ editor: e, transaction }) => {
+      setSnapshot(JSON.parse(JSON.stringify(e.getJSON())) as JSONContent);
+      // 速度の記録（pace）だけの変更は「未保存」にしない。次の保存でまとめて入る
+      if (!transaction.getMeta("paceWrite")) markDirty();
+    },
+  });
+
+  const insertImages = useCallback(
+    async (files: File[], at?: number) => {
+      if (!editor) return;
+      flash(files.length > 1 ? `${files.length} 枚をアップロード中…` : "アップロード中…");
+      for (const file of files) {
+        try {
+          const { src } = await upload(file);
+          const alt = file.name.replace(/\.[^.]+$/, "");
+          const chain = editor.chain().focus();
+          if (typeof at === "number") chain.insertContentAt(at, { type: "image", attrs: { src, alt } });
+          else chain.setImage({ src, alt });
+          chain.run();
+          at = undefined;
+        } catch (err) {
+          flash(err instanceof Error ? err.message : "アップロードできませんでした");
+        }
+      }
+    },
+    [editor, upload, flash],
+  );
+  useEffect(() => {
+    insertImagesRef.current = insertImages;
+  }, [insertImages]);
+
+  // 開発中はコンソールから editor を触れるようにする
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production" && editor) {
+      (window as unknown as { __kasureEditor?: unknown }).__kasureEditor = editor;
+    }
+  }, [editor]);
+
+  useEffect(() => {
+    const pick = () => imageInput.current?.click();
+    document.addEventListener("kasure:pick-image", pick);
+    return () => document.removeEventListener("kasure:pick-image", pick);
+  }, []);
 
   const save = useCallback(
     async (opts: { quiet?: boolean } = {}) => {
-      if (saving.current) return;
-      if (!title.trim() && !body.trim()) {
+      if (saving.current || !editor) return;
+      // ProseMirror の attrs はプロトタイプのないオブジェクトで、そのままではサーバーアクションに渡せない
+      const doc = JSON.parse(JSON.stringify(editor.getJSON())) as JSONContent;
+      if (!title.trim() && editor.isEmpty) {
         if (!opts.quiet) flash("タイトルか本文を書いてください");
         return;
       }
       saving.current = true;
       const startedVersion = version.current;
       setStatus("saving");
-      const input: SaveNoteInput = { id, title, body, tags, visibility, accent, coverKey };
+      const input: SaveNoteInput = { id, title, doc, layout, tags, visibility, accent, coverKey };
       const result = await saveNote(input);
       saving.current = false;
       if (!result.ok) {
@@ -82,7 +182,7 @@ export function Editor({ initial }: { initial: Note | null }) {
       }
       if (!opts.quiet) flash(visibility === "public" ? "公開ノートとして保存しました" : "保存しました");
     },
-    [id, title, body, tags, visibility, accent, coverKey, flash],
+    [editor, id, title, layout, tags, visibility, accent, coverKey, flash],
   );
 
   // 既存ノートは 2.5 秒の静止で自動保存
@@ -90,7 +190,7 @@ export function Editor({ initial }: { initial: Note | null }) {
     if (status !== "dirty" || !id) return;
     const t = window.setTimeout(() => save({ quiet: true }), 2500);
     return () => window.clearTimeout(t);
-  }, [status, id, save, title, body, tags, visibility, accent, coverKey]);
+  }, [status, id, save, title, snapshot, tags, visibility, accent, coverKey, layout]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -113,43 +213,6 @@ export function Editor({ initial }: { initial: Note | null }) {
       window.removeEventListener("beforeunload", beforeUnload);
     };
   }, [save, status]);
-
-  const upload = useCallback(async (file: File) => {
-    const res = await fetch("/api/upload", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contentType: file.type, size: file.size }),
-    });
-    const data = (await res.json()) as { url?: string; key?: string; src?: string; error?: string };
-    if (!res.ok || !data.url) throw new Error(data.error ?? "アップロードできませんでした");
-    const put = await fetch(data.url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
-    if (!put.ok) throw new Error("アップロードできませんでした");
-    return { key: data.key!, src: data.src! };
-  }, []);
-
-  const insertImages = useCallback(
-    async (files: File[]) => {
-      const images = files.filter((f) => f.type.startsWith("image/"));
-      if (images.length === 0) return;
-      const el = bodyRef.current;
-      const at = el?.selectionStart ?? body.length;
-      const placeholders = images.map((f, i) => `![${f.name} をアップロード中…](uploading-${i})`);
-      const block = `\n${placeholders.join("\n")}\n`;
-      setBody((b) => b.slice(0, at) + block + b.slice(at));
-      markDirty();
-      for (const [i, file] of images.entries()) {
-        try {
-          const { src } = await upload(file);
-          setBody((b) => b.replace(placeholders[i], `![${file.name.replace(/\.[^.]+$/, "")}](${src})`));
-        } catch (err) {
-          setBody((b) => b.replace(placeholders[i], ""));
-          flash(err instanceof Error ? err.message : "アップロードできませんでした");
-        }
-      }
-      markDirty();
-    },
-    [body.length, upload, flash],
-  );
 
   const onCover = async (file?: File) => {
     if (!file) return;
@@ -176,16 +239,18 @@ export function Editor({ initial }: { initial: Note | null }) {
     startTransition(() => deleteNote(id));
   };
 
-  const preview = (
-    <article className="prose" style={{ marginTop: 0, "--accent": `var(--${accent === "sumi" ? "ink" : accent})` } as React.CSSProperties}>
-      <h1 style={{ fontSize: "clamp(30px, 3.4vw, 48px)", lineHeight: 1.3, margin: "0 0 1em" }}>{title || "無題"}</h1>
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{body || "*本文がここに組まれます。*"}</ReactMarkdown>
-    </article>
-  );
+  const pickSlash = (item: SlashItem) => {
+    if (!editor || !slash?.range) return;
+    item.run(editor, slash.range);
+    setSlash(null);
+  };
+
+  const accentVar = `var(--${accent === "sumi" ? "ink" : accent})`;
 
   return (
     <div
       className="editor"
+      style={{ "--accent": accentVar } as React.CSSProperties}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("Files")) {
           e.preventDefault();
@@ -195,11 +260,7 @@ export function Editor({ initial }: { initial: Note | null }) {
       onDragLeave={(e) => {
         if (e.currentTarget === e.target || !e.relatedTarget) setDragging(false);
       }}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragging(false);
-        insertImages([...e.dataTransfer.files]);
-      }}
+      onDrop={() => setDragging(false)}
     >
       <div className="editor-bar">
         <div className="editor-bar-group">
@@ -230,6 +291,21 @@ export function Editor({ initial }: { initial: Note | null }) {
             <span className="toggle-track" aria-hidden />
             かすれ
           </button>
+          <div className="menu">
+            <button className="btn btn-sm btn-ghost" aria-haspopup="dialog" aria-expanded={layoutOpen} onClick={() => setLayoutOpen((v) => !v)}>
+              体裁{layout.writing === "vertical" ? " · 縦" : ""}
+            </button>
+            {layoutOpen && (
+              <LayoutPopover
+                layout={layout}
+                onChange={(l) => {
+                  setLayout(l);
+                  markDirty();
+                }}
+                onClose={() => setLayoutOpen(false)}
+              />
+            )}
+          </div>
           <button
             className="toggle"
             role="switch"
@@ -256,7 +332,7 @@ export function Editor({ initial }: { initial: Note | null }) {
       <div className="editor-body" data-mode={mode}>
         {mode !== "read" && (
           <div className="editor-pane">
-            <div className="editor-inner">
+            <div className="editor-inner" data-measure={layout.measure}>
               <textarea
                 className="title-input"
                 placeholder="タイトル"
@@ -270,7 +346,7 @@ export function Editor({ initial }: { initial: Note | null }) {
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
-                    bodyRef.current?.focus();
+                    editor?.commands.focus("start");
                   }
                 }}
                 aria-label="タイトル"
@@ -314,12 +390,18 @@ export function Editor({ initial }: { initial: Note | null }) {
                     生成表紙に戻す
                   </button>
                 )}
+                <input ref={coverInput} type="file" accept="image/*" hidden onChange={(e) => onCover(e.target.files?.[0])} />
                 <input
-                  ref={coverInput}
+                  ref={imageInput}
                   type="file"
                   accept="image/*"
+                  multiple
                   hidden
-                  onChange={(e) => onCover(e.target.files?.[0])}
+                  onChange={(e) => {
+                    const files = [...(e.target.files ?? [])];
+                    e.target.value = "";
+                    if (files.length) void insertImages(files);
+                  }}
                 />
                 <div className="tag-input">
                   {tags.map((t) => (
@@ -361,39 +443,16 @@ export function Editor({ initial }: { initial: Note | null }) {
                   />
                 </div>
               </div>
-              <div className="body-wrap" data-focus={focusInk && caret !== null}>
-                <div className="body-mirror" aria-hidden>
-                  {body ? (
-                    <InkLines text={body} caret={focusInk ? caret : null} />
-                  ) : (
-                    <span className="body-placeholder">
-                      {"ここに書く。\n\nMarkdown が使えます。画像はドラッグするか貼り付け。"}
-                    </span>
-                  )}
-                </div>
-                <textarea
-                  ref={bodyRef}
-                  className="body-input"
-                  value={body}
-                  onChange={(e) => {
-                    setBody(e.target.value);
-                    setCaret(e.target.selectionStart);
-                    markDirty();
-                  }}
-                  onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-                  onFocus={(e) => setCaret(e.currentTarget.selectionStart)}
-                  onBlur={() => setCaret(null)}
-                  onPaste={(e) => {
-                    const files = [...e.clipboardData.files];
-                    if (files.some((f) => f.type.startsWith("image/"))) {
-                      e.preventDefault();
-                      insertImages(files);
-                    }
-                  }}
-                  aria-label="本文"
-                  spellCheck={false}
-                />
+
+              <div className="body-wrap" data-focus={focusInk}>
+                <EditorContent editor={editor} />
+                {editor && <InkBubbleMenu editor={editor} />}
+                {editor && <BlockFloatingMenu editor={editor} onImage={() => imageInput.current?.click()} />}
               </div>
+              <p className="editor-help mono muted">
+                文字を選ぶと書式 · 「/」でブロック · ⌘⇧L/E/R 揃え · ⌘⇧W 広い · ⌘⇧M 間 · ⌘\ 並べる
+              </p>
+
               {id && (
                 <div style={{ marginTop: 64, paddingTop: 18, borderTop: "1px solid var(--rule)" }}>
                   <button className="danger" onClick={onDelete}>
@@ -406,11 +465,14 @@ export function Editor({ initial }: { initial: Note | null }) {
         )}
         {mode !== "write" && (
           <div className="editor-pane" aria-label="プレビュー">
-            <div className="editor-inner">{preview}</div>
+            <div className="editor-inner" data-measure={layout.measure}>
+              <Preview title={title} doc={snapshot} layout={layout} />
+            </div>
           </div>
         )}
       </div>
 
+      <SlashMenu state={slash} onPick={pickSlash} onHover={slashApi.select} />
       {dragging && <div className="drop-hint">画像をここに置く</div>}
       {toast && (
         <div className="toast" role="status">
@@ -421,32 +483,20 @@ export function Editor({ initial }: { initial: Note | null }) {
   );
 }
 
-// 本文を段落ごとに描き、カーソルのある段落からの距離でかすれの段階を決める
-function InkLines({ text, caret }: { text: string; caret: number | null }) {
-  const lines = text.split("\n");
-  // 空行で区切られたまとまりを段落とみなす
-  const para: number[] = [];
-  let p = 0;
-  lines.forEach((line, i) => {
-    if (line.trim() === "" && i > 0 && lines[i - 1].trim() !== "") p++;
-    para.push(p);
-  });
-  let caretPara = -1;
-  if (caret !== null) {
-    const caretLine = text.slice(0, caret).split("\n").length - 1;
-    caretPara = para[caretLine];
-  }
+// プレビューは閲覧ページと同じスキーマから同じ HTML を生成する
+const previewExtensions = buildExtensions();
+function Preview({ title, doc, layout }: { title: string; doc: JSONContent; layout: NoteLayout }) {
+  const html = useMemo(() => {
+    try {
+      return generateHTML(doc, previewExtensions);
+    } catch {
+      return "";
+    }
+  }, [doc]);
   return (
-    <>
-      {lines.map((line, i) => {
-        const level = caretPara < 0 ? 0 : Math.min(4, Math.abs(para[i] - caretPara));
-        return (
-          <span key={i} className="ln" data-k={level}>
-            {line || "\u200b"}
-            {i < lines.length - 1 ? "\n" : ""}
-          </span>
-        );
-      })}
-    </>
+    <div className="read-body" data-writing={layout.writing} data-measure={layout.measure}>
+      <h1 className="preview-title">{title || "無題"}</h1>
+      <article className="prose" dangerouslySetInnerHTML={{ __html: html || "<p><em>本文がここに組まれます。</em></p>" }} />
+    </div>
   );
 }

@@ -5,11 +5,15 @@ import { updateTag } from "next/cache";
 import { requireViewer } from "@/lib/auth";
 import { transaction } from "@/lib/db";
 import { ACCENTS, type Accent } from "@/lib/notes-types";
+import { normalizeLayout, type NoteLayout } from "@/lib/editor-schema";
+import { docToText, validateDoc } from "@/lib/render-doc";
+import type { JSONContent } from "@tiptap/core";
 
 export type SaveNoteInput = {
   id?: string;
   title: string;
-  body: string;
+  doc: JSONContent;
+  layout: NoteLayout;
   tags: string[];
   visibility: "private" | "public";
   accent: Accent;
@@ -21,7 +25,16 @@ export type SaveNoteResult = { ok: true; id: string; slug: string } | { ok: fals
 export async function saveNote(input: SaveNoteInput): Promise<SaveNoteResult> {
   const viewer = await requireViewer();
   const title = input.title.trim().slice(0, 200) || "無題";
-  const body = input.body.slice(0, 200_000);
+  let doc: JSONContent;
+  try {
+    doc = validateDoc(input.doc);
+  } catch (err) {
+    console.error("invalid doc", err);
+    return { ok: false, error: "本文の形式が正しくありません" };
+  }
+  // 検索・抜粋用のプレーンテキストはサーバー側で生成する（クライアントの値は信用しない）
+  const body = docToText(doc).slice(0, 200_000);
+  const layout = normalizeLayout(input.layout);
   const tags = [...new Set(input.tags.map((t) => t.trim().toLowerCase()).filter(Boolean))]
     .slice(0, 12)
     .map((t) => t.slice(0, 32));
@@ -37,9 +50,9 @@ export async function saveNote(input: SaveNoteInput): Promise<SaveNoteResult> {
       let slug: string;
       if (id) {
         const res = await db.query(
-          `UPDATE notes SET title=$1, body=$2, excerpt=$3, visibility=$4, accent=$5, cover_key=$6, updated_at=now()
-           WHERE id=$7 AND owner_sub=$8 RETURNING slug`,
-          [title, body, excerpt, visibility, accent, coverKey, id, viewer.sub],
+          `UPDATE notes SET title=$1, body=$2, excerpt=$3, visibility=$4, accent=$5, cover_key=$6, doc=$7, layout=$8, updated_at=now()
+           WHERE id=$9 AND owner_sub=$10 RETURNING slug`,
+          [title, body, excerpt, visibility, accent, coverKey, JSON.stringify(doc), JSON.stringify(layout), id, viewer.sub],
         );
         if (res.rowCount === 0) throw new Error("not-found");
         slug = res.rows[0].slug;
@@ -47,9 +60,9 @@ export async function saveNote(input: SaveNoteInput): Promise<SaveNoteResult> {
       } else {
         slug = makeSlug();
         const res = await db.query(
-          `INSERT INTO notes (owner_sub, owner_name, title, body, excerpt, visibility, accent, cover_key, slug)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
-          [viewer.sub, viewer.name, title, body, excerpt, visibility, accent, coverKey, slug],
+          `INSERT INTO notes (owner_sub, owner_name, title, body, excerpt, visibility, accent, cover_key, slug, doc, layout)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+          [viewer.sub, viewer.name, title, body, excerpt, visibility, accent, coverKey, slug, JSON.stringify(doc), JSON.stringify(layout)],
         );
         id = res.rows[0].id as string;
       }
@@ -87,14 +100,7 @@ function makeSlug() {
   return `${date}-${crypto.randomUUID().slice(0, 6)}`;
 }
 
-function toExcerpt(markdown: string) {
-  return markdown
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/!\[[^\]]*]\([^)]*\)/g, " ")
-    .replace(/\[([^\]]*)]\([^)]*\)/g, "$1")
-    .replace(/[#>*_`~\-|]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 160);
+function toExcerpt(text: string) {
+  return text.replace(/\s+/g, " ").trim().slice(0, 160);
 }
 

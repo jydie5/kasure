@@ -199,6 +199,7 @@ async function PublicNotes() {
         lead: <span className="mono">{pad(i + 1)}</span>,
         cells: [note.ownerName, formatDate(note.updatedAt)],
         updatedAt: note.updatedAt,
+        decayDays: note.layout.decayDays,
         preview: <NoteCover note={note} />,
       }))}
     />

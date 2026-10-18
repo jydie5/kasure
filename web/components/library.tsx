@@ -108,7 +108,7 @@ export function Library({ notes }: { notes: NoteSummary[] }) {
       ) : view === "grid" ? (
         <div className="cards">
           {filtered.map((note) => {
-            const amount = kasureAmount(note.updatedAt, now);
+            const amount = kasureAmount(note.updatedAt, now, note.layout.decayDays);
             return (
             <Link
               key={note.id}
@@ -155,6 +155,7 @@ export function Library({ notes }: { notes: NoteSummary[] }) {
             ),
             cells: [note.visibility === "public" ? "● Public" : "○ Private", formatDate(note.updatedAt)],
             updatedAt: note.updatedAt,
+            decayDays: note.layout.decayDays,
             preview: <NoteCover note={note} />,
           }))}
         />

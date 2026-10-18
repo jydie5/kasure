@@ -3,6 +3,8 @@ import { cacheLife, cacheTag } from "next/cache";
 import { query } from "./db";
 
 import { type Accent, type Note, type NoteSummary } from "./notes-types";
+import { normalizeLayout } from "./editor-schema";
+import type { JSONContent } from "@tiptap/core";
 
 export { ACCENTS } from "./notes-types";
 export type { Accent, Note, NoteSummary };
@@ -13,6 +15,8 @@ type Row = {
   title: string;
   excerpt: string;
   body?: string;
+  doc?: JSONContent | null;
+  layout?: unknown;
   owner_sub: string;
   owner_name: string;
   visibility: "private" | "public";
@@ -23,7 +27,7 @@ type Row = {
   body_length: number;
 };
 
-const SUMMARY_COLUMNS = `id, slug, title, excerpt, owner_sub, owner_name, visibility, accent, cover_key,
+const SUMMARY_COLUMNS = `id, slug, title, excerpt, owner_sub, owner_name, visibility, accent, cover_key, layout,
   created_at, updated_at, char_length(body) AS body_length`;
 
 async function attachTags<T extends Row>(rows: T[]): Promise<Map<string, string[]>> {
@@ -55,6 +59,7 @@ function toSummary(row: Row, tags: Map<string, string[]>): NoteSummary {
     updatedAt: row.updated_at.toISOString(),
     // 日本語は 1 分 500 字程度で概算
     readingMinutes: Math.max(1, Math.round(Number(row.body_length) / 500)),
+    layout: normalizeLayout(row.layout),
   };
 }
 
@@ -84,13 +89,13 @@ export async function listNotesByOwner(ownerSub: string): Promise<NoteSummary[]>
 
 async function getNoteWhere(column: "id" | "slug", value: string): Promise<Note | null> {
   const rows = await query<Row>(
-    `SELECT ${SUMMARY_COLUMNS}, body FROM notes WHERE ${column} = $1 LIMIT 1`,
+    `SELECT ${SUMMARY_COLUMNS}, body, doc FROM notes WHERE ${column} = $1 LIMIT 1`,
     [value],
   );
   const row = rows[0];
   if (!row) return null;
   const tags = await attachTags(rows);
-  return { ...toSummary(row, tags), body: row.body ?? "" };
+  return { ...toSummary(row, tags), body: row.body ?? "", doc: row.doc ?? null };
 }
 
 export async function getNoteBySlug(slug: string): Promise<Note | null> {

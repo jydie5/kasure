@@ -13,6 +13,7 @@ export type IndexItem = {
   preview: ReactNode;
   lead: ReactNode;
   updatedAt?: string;
+  decayDays?: number;
 };
 
 // 目次のような行リスト。ホバー中の行の表紙がカーソルに追従して浮かぶ
@@ -56,7 +57,7 @@ export function IndexList({ items, className = "" }: { items: IndexItem[]; class
     <div className={className} onPointerMove={onMove} onPointerLeave={onLeave}>
       <ul className="index">
         {items.map((item) => {
-          const amount = item.updatedAt ? kasureAmount(item.updatedAt, now) : 0;
+          const amount = item.updatedAt ? kasureAmount(item.updatedAt, now, item.decayDays) : 0;
           return (
           <li
             key={item.id}

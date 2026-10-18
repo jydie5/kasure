@@ -13,13 +13,12 @@ export function useNow(): number | null {
   return useSyncExternalStore(subscribe, getMinute, () => null);
 }
 
-const DECAY_DAYS = 7;
-
-// 最終更新からの経過で墨がかすれる。0 = 濃い墨、1 = ほぼ消えかけ（1 週間で約 6 割）
-export function kasureAmount(updatedAt: string, now: number | null): number {
-  if (now === null) return 0;
+// 最終更新からの経過で墨がかすれる。0 = 濃い墨、1 = ほぼ消えかけ（decayDays 日で約 6 割）。
+// decayDays = 0 は「永久墨」で、かすれない
+export function kasureAmount(updatedAt: string, now: number | null, decayDays = 7): number {
+  if (now === null || decayDays === 0) return 0;
   const days = Math.max(0, now - new Date(updatedAt).getTime()) / 86_400_000;
-  return 1 - Math.exp(-days / DECAY_DAYS);
+  return 1 - Math.exp(-days / decayDays);
 }
 
 export function kasureLevel(amount: number): 0 | 1 | 2 | 3 | 4 {

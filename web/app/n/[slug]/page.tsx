@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import { getNoteBySlug } from "@/lib/notes";
 import { getViewer } from "@/lib/auth";
 import { Markdown } from "@/components/markdown";
+import { docToHTML } from "@/lib/render-doc";
 import { NoteCover } from "@/components/note-cover";
 import { CopyLink } from "@/components/copy-link";
 import { formatDate } from "@/components/format";
@@ -69,9 +70,15 @@ async function NoteView({ params }: { params: PageProps<"/n/[slug]">["params"] }
       </header>
       <div className="shell">
         <hr className="hairline read-rule draw-line" />
-        <article className="prose fade-up" style={{ "--d": "0.3s" } as React.CSSProperties}>
-          <Markdown source={note.body} />
-        </article>
+        <div className="read-body fade-up" data-writing={note.layout.writing} data-measure={note.layout.measure} style={{ "--d": "0.3s" } as React.CSSProperties}>
+          {note.doc ? (
+            <article className="prose" dangerouslySetInnerHTML={{ __html: docToHTML(note.doc) }} />
+          ) : (
+            <article className="prose">
+              <Markdown source={note.body} />
+            </article>
+          )}
+        </div>
         <footer className="read-foot">
           <Link href={isOwner ? "/notes" : "/#public"} className="link-u">
             ← {isOwner ? "ライブラリへ" : "公開ノート一覧へ"}
