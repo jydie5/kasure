@@ -153,10 +153,21 @@ export const Columns = Node.create({
 export const PACE_TYPES = ["paragraph", "heading"];
 export const WIDTH_TYPES = ["paragraph", "heading", "image", "columns", "blockquote", "codeBlock"];
 
-// 0〜1 の速度を 0/1/2 の見た目の段階に落とす
+// 0〜1 の速度を 0〜3 の見た目の段階に落とす
 export function paceLevel(pace: number | null | undefined) {
-  if (!pace || pace < 0.45) return 0;
-  return pace < 0.75 ? 1 : 2;
+  if (!pace || pace < 0.35) return 0;
+  return pace < 0.6 ? 1 : pace < 0.85 ? 2 : 3;
+}
+
+// 0〜1 のためらい（消した量 ÷ 残った量）を 0〜3 に落とす
+export function hesitationLevel(hes: number | null | undefined) {
+  if (!hes || hes < 0.25) return 0;
+  return hes < 0.6 ? 1 : hes < 1.2 ? 2 : 3;
+}
+
+export const PID_RE = /^[a-z0-9]{6,10}$/;
+export function newPid() {
+  return Math.random().toString(36).slice(2, 10);
 }
 
 const BlockAttrs = Extension.create({
@@ -174,18 +185,40 @@ const BlockAttrs = Extension.create({
         },
       },
       {
+        // 段落が持つ「跡」: 速度・ためらい・最後に触れた時刻・段落 ID・読まれた回数（サーバーが付ける）
         types: PACE_TYPES,
         attributes: {
           pace: {
             default: null,
-            parseHTML: (el) => {
-              const v = Number(el.getAttribute("data-pace-raw"));
-              return Number.isFinite(v) && v > 0 ? Math.min(1, v) : null;
-            },
+            parseHTML: () => null,
             renderHTML: (attrs) => {
               const level = paceLevel(attrs.pace);
               return level ? { "data-pace": level } : {};
             },
+          },
+          hes: {
+            default: null,
+            parseHTML: () => null,
+            renderHTML: (attrs) => {
+              const level = hesitationLevel(attrs.hes);
+              return level ? { "data-hes": level } : {};
+            },
+          },
+          touched: {
+            default: null,
+            parseHTML: () => null,
+            renderHTML: (attrs) =>
+              typeof attrs.touched === "string" && /^\d{4}-\d{2}-\d{2}T/.test(attrs.touched) ? { "data-touched": attrs.touched } : {},
+          },
+          pid: {
+            default: null,
+            parseHTML: () => null,
+            renderHTML: (attrs) => (typeof attrs.pid === "string" && PID_RE.test(attrs.pid) ? { "data-pid": attrs.pid } : {}),
+          },
+          reads: {
+            default: null,
+            parseHTML: () => null,
+            renderHTML: (attrs) => (typeof attrs.reads === "number" && attrs.reads > 0 ? { "data-reads": Math.min(3, attrs.reads) } : {}),
           },
         },
       },

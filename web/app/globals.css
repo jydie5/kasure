@@ -2318,3 +2318,60 @@ a:hover > .arrow {
     max-width: calc(100vw - 24px);
   }
 }
+
+/* ==========================================================================
+   跡（閲覧ページに積もるかすれ）
+   速度・ためらい・時間 は墨を薄くし、読まれた回数 は墨を戻す。
+   ========================================================================== */
+.read-body .prose [data-pace],
+.read-body .prose [data-hes],
+.read-body .prose [data-age] {
+  transition: opacity 0.6s var(--ease-out), filter 0.6s var(--ease-out), text-shadow 0.6s var(--ease-out);
+}
+/* 速度: 速く書いた段落ほど掠れる */
+.read-body .prose [data-pace="1"] { opacity: 0.86; filter: url(#kasure-1); }
+.read-body .prose [data-pace="2"] { opacity: 0.74; filter: url(#kasure-2); }
+.read-body .prose [data-pace="3"] { opacity: 0.64; filter: url(#kasure-3); }
+.k-legend { filter: url(#kasure-3); opacity: 0.64; }
+/* ためらい: 書き直した段落は線がぶれ、墨だまりができる */
+.read-body .prose [data-hes="1"] { text-shadow: 0.02em 0.02em 0 color-mix(in oklab, currentColor 35%, transparent); }
+.read-body .prose [data-hes="2"] { text-shadow: 0.04em 0.03em 0 color-mix(in oklab, currentColor 45%, transparent), -0.02em 0 0.3px color-mix(in oklab, currentColor 30%, transparent); }
+.read-body .prose [data-hes="3"] { text-shadow: 0.06em 0.04em 0 color-mix(in oklab, currentColor 55%, transparent), -0.03em 0.01em 0.5px color-mix(in oklab, currentColor 40%, transparent); letter-spacing: 0.045em; }
+/* 時間: 触れてから経った段落ほど薄い（ノートの中に時間の層ができる） */
+.read-body .prose [data-age="1"] { opacity: 0.8; }
+.read-body .prose [data-age="2"] { opacity: 0.66; filter: url(#kasure-1); }
+.read-body .prose [data-age="3"] { opacity: 0.52; filter: url(#kasure-2); }
+/* 読まれた回数: 読まれるほど墨が戻る */
+.read-body .prose [data-reads="1"] { opacity: 0.9 !important; }
+.read-body .prose [data-reads="2"] { opacity: 0.96 !important; filter: none !important; }
+.read-body .prose [data-reads="3"] { opacity: 1 !important; filter: none !important; text-shadow: none !important; }
+/* 触れると、いまだけ墨が戻る */
+.read-body .prose [data-pace]:hover,
+.read-body .prose [data-hes]:hover,
+.read-body .prose [data-age]:hover {
+  opacity: 1;
+  filter: none;
+  text-shadow: none;
+}
+/* 跡の凡例 */
+.trace-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.trace-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.trace-legend i {
+  display: inline-block;
+  width: 1.2em;
+  text-align: center;
+  font-family: var(--font-mincho);
+  font-style: normal;
+  font-weight: 800;
+}

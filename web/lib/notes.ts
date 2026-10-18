@@ -113,3 +113,13 @@ export async function getNoteById(id: string): Promise<Note | null> {
   if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
   return getNoteWhere("id", id);
 }
+
+// 段落ごとの読まれた回数を 0〜3 の段階にして返す（1 回・3 回・8 回以上）
+export async function getReadLevels(noteId: string): Promise<Record<string, number>> {
+  const rows = await query<{ pid: string; reads: number }>("SELECT pid, reads FROM note_reads WHERE note_id = $1", [noteId]);
+  const levels: Record<string, number> = {};
+  for (const { pid, reads } of rows) {
+    levels[pid] = reads >= 8 ? 3 : reads >= 3 ? 2 : reads >= 1 ? 1 : 0;
+  }
+  return levels;
+}

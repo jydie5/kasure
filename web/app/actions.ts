@@ -3,9 +3,10 @@
 import { redirect } from "next/navigation";
 import { updateTag } from "next/cache";
 import { requireViewer } from "@/lib/auth";
-import { transaction } from "@/lib/db";
+import { query, transaction } from "@/lib/db";
 import { ACCENTS, type Accent } from "@/lib/notes-types";
-import { normalizeLayout, type NoteLayout } from "@/lib/editor-schema";
+import { normalizeLayout, PID_RE, type NoteLayout } from "@/lib/editor-schema";
+import { readSession } from "@/lib/session";
 import { docToText, validateDoc } from "@/lib/render-doc";
 import type { JSONContent } from "@tiptap/core";
 
@@ -104,3 +105,32 @@ function toExcerpt(text: string) {
   return text.replace(/\s+/g, " ").trim().slice(0, 160);
 }
 
+
+// 公開ノートの段落が読まれた回数を増やす（読まれた段落は墨が戻る）。書いた本人の閲覧は数えない
+export async function recordReads(noteId: string, pids: string[]) {
+  if (!/^[0-9a-f-]{36}$/i.test(noteId) || !Array.isArray(pids)) return;
+  const clean = [...new Set(pids.filter((p) => typeof p === "string" && PID_RE.test(p)))].slice(0, 60);
+  if (clean.length === 0) return;
+  const rows = await query<{ owner_sub: string; visibility: string }>(
+    "SELECT owner_sub, visibility FROM notes WHERE id = $1",
+    [noteId],
+  );
+  const note = rows[0];
+  if (!note || note.visibility !== "public") return;
+  const viewer = await readSession();
+  if (viewer?.sub === note.owner_sub) return;
+  try {
+    await transaction(async (db) => {
+      for (const pid of clean) {
+        await db.query(
+          `INSERT INTO note_reads (note_id, pid, reads, updated_at) VALUES ($1, $2, 1, now())
+           ON CONFLICT (note_id, pid) DO UPDATE SET reads = note_reads.reads + 1, updated_at = now()`,
+          [noteId, pid],
+        );
+      }
+    });
+    updateTag(`note:${noteId}`);
+  } catch (err) {
+    console.error("recordReads failed", err);
+  }
+}

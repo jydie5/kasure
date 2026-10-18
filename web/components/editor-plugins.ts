@@ -3,7 +3,7 @@
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey, type EditorState } from "@tiptap/pm/state";
 import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
-import { PACE_TYPES } from "@/lib/editor-schema";
+import { PACE_TYPES, newPid } from "@/lib/editor-schema";
 
 // ===== 集中モード: カーソルのあるブロックからの距離で、他のブロックをかすれさせる =====
 const focusKey = new PluginKey("focusKasure");
@@ -17,8 +17,9 @@ function focusDecorations(state: EditorState): DecorationSet {
   const topPos = $from.depth >= 1 ? $from.before(1) : null;
   const current = blocks.findIndex((b) => b.pos === topPos);
   if (current < 0) return DecorationSet.empty;
+  // 隣の段落は読めるまま残す。距離 2 から段階的にかすれる
   const decos = blocks.map((b, i) =>
-    Decoration.node(b.pos, b.pos + b.node.nodeSize, { "data-k": String(Math.min(4, Math.abs(i - current))) }),
+    Decoration.node(b.pos, b.pos + b.node.nodeSize, { "data-k": String(Math.max(0, Math.min(4, Math.abs(i - current) - 1))) }),
   );
   return DecorationSet.create(doc, decos);
 }
@@ -53,29 +54,54 @@ const MIN_CHARS = 12;
 const MIN_MS = 2000;
 const MAX_CPS = 5; // 日本語入力でこの速さなら「速い」とみなす上限（文字/秒）
 
-type Tracked = { pos: number; len: number; typedChars: number; typedMs: number; lastTs: number };
+type Tracked = { pos: number; len: number; typedChars: number; deletedChars: number; typedMs: number; lastTs: number };
 
 export const PaceTracker = Extension.create({
   name: "paceTracker",
   addProseMirrorPlugins() {
     let tracked: Tracked | null = null;
     let timer: number | undefined;
+    let lastWasPaceWrite = false;
 
     const flush = (view: EditorView) => {
       if (!tracked) return;
       const t = tracked;
       tracked = null;
-      if (t.typedChars < MIN_CHARS || t.typedMs < MIN_MS) return;
       const node = view.state.doc.nodeAt(t.pos);
       if (!node || !PACE_TYPES.includes(node.type.name)) return;
-      const cps = t.typedChars / (t.typedMs / 1000);
-      const pace = Math.round(Math.min(1, cps / MAX_CPS) * 100) / 100;
-      // すでに記録がある段落は、過去の速度と平均して「書き足し」を反映する
-      const prev = typeof node.attrs.pace === "number" ? node.attrs.pace : null;
-      const next = prev === null ? pace : Math.round(((prev + pace) / 2) * 100) / 100;
-      if (next === prev) return;
-      const tr = view.state.tr.setNodeMarkup(t.pos, undefined, { ...node.attrs, pace: next });
+      const attrs: Record<string, unknown> = { ...node.attrs };
+      let changed = false;
+      // 速度: 十分に書いた段落だけ記録する（短い修正では変えない）
+      if (t.typedChars >= MIN_CHARS && t.typedMs >= MIN_MS) {
+        const cps = t.typedChars / (t.typedMs / 1000);
+        const pace = Math.round(Math.min(1, cps / MAX_CPS) * 100) / 100;
+        const prev = typeof node.attrs.pace === "number" ? node.attrs.pace : null;
+        const next = prev === null ? pace : Math.round(((prev + pace) / 2) * 100) / 100;
+        if (next !== prev) {
+          attrs.pace = next;
+          changed = true;
+        }
+      }
+      // ためらい: 消した文字数 ÷ 残った文字数。書き直すほど増える（上限 2）
+      if (t.deletedChars > 0 && node.textContent.length > 0) {
+        const add = t.deletedChars / Math.max(8, node.textContent.length);
+        const prev = typeof node.attrs.hes === "number" ? node.attrs.hes : 0;
+        const next = Math.round(Math.min(2, prev + add) * 100) / 100;
+        if (next !== prev) {
+          attrs.hes = next;
+          changed = true;
+        }
+      }
+      // 触れた時刻と段落 ID: 何かしら書いた段落には必ず付ける
+      if (t.typedChars > 0 || t.deletedChars > 0) {
+        attrs.touched = new Date().toISOString();
+        if (!attrs.pid) attrs.pid = newPid();
+        changed = true;
+      }
+      if (!changed) return;
+      const tr = view.state.tr.setNodeMarkup(t.pos, undefined, attrs);
       tr.setMeta("addToHistory", false).setMeta(PACE_META, true);
+      lastWasPaceWrite = true;
       view.dispatch(tr);
     };
 
@@ -95,6 +121,10 @@ export const PaceTracker = Extension.create({
           return {
             update(v, prevState) {
               if (v.state.doc === prevState.doc) return;
+              if (lastWasPaceWrite) {
+                lastWasPaceWrite = false;
+                return;
+              }
               const block = textblockAt(v.state);
               if (!block || !PACE_TYPES.includes(block.node.type.name)) return;
               const now = Date.now();
@@ -105,7 +135,7 @@ export const PaceTracker = Extension.create({
                 else tracked = null;
               }
               if (!tracked) {
-                tracked = { pos: block.pos, len: block.node.textContent.length, typedChars: 0, typedMs: 0, lastTs: now };
+                tracked = { pos: block.pos, len: block.node.textContent.length, typedChars: 0, deletedChars: 0, typedMs: 0, lastTs: now };
                 return;
               }
               const len = block.node.textContent.length;
@@ -114,6 +144,8 @@ export const PaceTracker = Extension.create({
               if (delta > 0) {
                 tracked.typedChars += delta;
                 tracked.typedMs += Math.min(gap, CONTINUE_MS);
+              } else if (delta < 0) {
+                tracked.deletedChars += -delta;
               }
               tracked.len = len;
               tracked.lastTs = now;

@@ -76,3 +76,27 @@ ALTER TABLE notes ADD COLUMN layout jsonb;   -- { writing, measure, decayDays }
 ### 2-5. 縦書き
 
 閲覧ページの `.prose` に `writing-mode: vertical-rl` と `text-orientation: mixed` を適用し、`max-height` を `calc(100svh - header)` にして横スクロールで読む。欧文と数字は `text-combine-upright: digits 2` で 2 桁までを縦中横にする。エディタは横書きのまま（編集効率を優先）、プレビューのみ縦書きで確認できる。
+
+## 3. 追記（2026-10-18）: かすれの向きを反転する
+
+### 3-1. 方針
+
+エディタは「墨が濃くなる場所」、閲覧ページ（跡）は「かすれが積もる場所」とする。集中モードのフェードは補助機能として残すが初期はオフにし、隣の段落は薄くしない。Kasure の価値は「文章が、どう書かれたかを覚えている」ことに置く。
+
+### 3-2. 段落が持つ 4 つの痕跡
+
+| 痕跡 | 属性 | 測り方 | 閲覧での見え方 |
+|---|---|---|---|
+| 速度 | `pace` 0〜1 | 文字数 ÷ 打鍵していた秒数（5 文字/秒を上限） | `data-pace` 1〜3。掠れフィルターと 0.86 / 0.74 / 0.64 の濃さ |
+| ためらい | `hes` 0〜2 | 消した文字数 ÷ 残った文字数を積算 | `data-hes` 1〜3。線のぶれ（text-shadow）と字間の広がり |
+| 時間 | `touched` ISO 時刻 | 段落に書き足した時刻 | クライアントで経過から `data-age` 1〜3 を付ける（ノートの `decayDays` に従う。0 = 永久墨で付けない） |
+| 読まれた回数 | `reads`（描画時のみ） | `note_reads(note_id, pid, reads)`。公開ノートを本人以外が段落を 1.5 秒以上視界に入れたら +1（同じタブでは 1 回） | `data-reads` 1〜3（1 回 / 3 回 / 8 回以上）。他の痕跡を押し戻し、3 で完全に墨が戻る |
+
+段落には安定した ID `pid`（8 文字の英数字）を保存時に必ず付ける。`reads` は保存せず、閲覧ページの描画時に `note_reads` から差し込む。
+
+### 3-3. 実装の所在
+
+- 計測: `web/components/editor-plugins.ts`（`PaceTracker`。1.5 秒の静止、または段落を離れた時に `pace / hes / touched / pid` を属性に書く。取り消し履歴には入れない）
+- 描画: `web/lib/render-doc.ts`（`docToHTML(doc, readLevels)` が `reads` を差し込む）、`web/components/trace.tsx`（`TraceAge` が `data-age` を付け、`ReadTracker` が閲覧を記録する）
+- 記録: `app/actions.ts` の `recordReads`（公開ノートのみ・本人は除外・1 回 60 段落まで）。`infra/migrate-002-reads.sql`
+- 触れると、いまだけ墨が戻る（hover）。凡例は閲覧ページ末尾に表示する

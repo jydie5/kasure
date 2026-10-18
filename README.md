@@ -10,7 +10,7 @@ Next.js 16 を **AWS Lambda Web Functions** にそのまま載せた、少人数
 - **書いた跡がかすれる集中モード**: エディタでは、カーソルのある段落だけが濃く、離れた段落ほどかすれる
 - リッチエディタ（Tiptap）: 文字を選ぶと浮かぶ書式メニュー（太字・サイズ・墨色・書体・かすれマーク・リンク）、`/` の挿入メニュー、画像のドラッグ＆ドロップ、自動保存
 - レイアウト: 揃え・幅・2 段組・「間」（余白ブロック）・ノート単位の縦書き
-- 書いた速度が残る: 段落ごとの入力速度を記録し、速く書いた段落ほど閲覧時にわずかにかすれる
+- **跡**: 段落ごとに「速度」「ためらい（書き直し）」「触れた時刻」を記録し、閲覧ページで掠れ・線のぶれ・時間の層として見える。公開ノートは**読まれた段落ほど墨が戻る**
 - 非公開／公開の切り替え、ノートごとに生成される表紙（円相・雨・枯山水・日輪・青海波）
 - 許可制ログイン（管理画面 `/admin` で招待したメールアドレスだけが入れる）
 
@@ -39,7 +39,7 @@ VPC を使わない構成のため、NAT Gateway の費用（東京で月 $45 �
 
 1. AWS 側のリソース（DSQL クラスター、S3 バケット、Cognito ユーザープール、実行ロール、SSM パラメータ `/yohaku/session-secret`）を作成する
 2. `cp infra/env.example.sh infra/env.sh` を実行し、値を埋める（`env.sh` は git 管理外）
-3. `infra/schema.sql`、`infra/migrate-001-doc.sql`、値を置き換えた `infra/grant.example.sql` を、DSQL の admin ロールで実行する
+3. `infra/schema.sql`、`infra/migrate-001-doc.sql`、`infra/migrate-002-reads.sql`、値を置き換えた `infra/grant.example.sql` を、DSQL の admin ロールで実行する
 4. `infra/role-policy.template.json` の変数を置き換え、実行ロールにインラインポリシーとして付与する
 5. ローカル開発: `web/.env.local` に環境変数を書き（下表）、`cd web && npm install && npm run dev`
 

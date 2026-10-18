@@ -6,7 +6,7 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import { generateHTML, type JSONContent } from "@tiptap/core";
 import { deleteNote, saveNote, type SaveNoteInput } from "@/app/actions";
 import { ACCENTS, type Accent, type Note } from "@/lib/notes-types";
-import { buildExtensions, DEFAULT_LAYOUT, type NoteLayout } from "@/lib/editor-schema";
+import { buildExtensions, DEFAULT_LAYOUT, PACE_TYPES, newPid, type NoteLayout } from "@/lib/editor-schema";
 import { clientExtensions } from "./editor-extensions";
 import { BlockFloatingMenu, InkBubbleMenu, LayoutPopover, SlashMenu, createSlashExtension, type SlashItem, type SlashState } from "./editor-menus";
 import { NoteGlyph } from "./note-glyph";
@@ -36,7 +36,7 @@ export function Editor({ initial }: { initial: Note | null }) {
   const [layout, setLayout] = useState<NoteLayout>(initial?.layout ?? DEFAULT_LAYOUT);
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [mode, setMode] = useState<Mode>("write");
-  const [focusInk, setFocusInk] = useState(true);
+  const [focusInk, setFocusInk] = useState(false);
   const [status, setStatus] = useState<Status>(initial ? "saved" : "idle");
   const [savedAt, setSavedAt] = useState<Date | null>(initial ? new Date(initial.updatedAt) : null);
   const [dragging, setDragging] = useState(false);
@@ -158,6 +158,7 @@ export function Editor({ initial }: { initial: Note | null }) {
       if (saving.current || !editor) return;
       // ProseMirror の attrs はプロトタイプのないオブジェクトで、そのままではサーバーアクションに渡せない
       const doc = JSON.parse(JSON.stringify(editor.getJSON())) as JSONContent;
+      ensurePids(doc);
       if (!title.trim() && editor.isEmpty) {
         if (!opts.quiet) flash("タイトルか本文を書いてください");
         return;
@@ -481,6 +482,15 @@ export function Editor({ initial }: { initial: Note | null }) {
       )}
     </div>
   );
+}
+
+// 読まれた回数を段落に結びつけるため、すべての段落に ID を持たせる
+function ensurePids(node: JSONContent) {
+  if (node.type && PACE_TYPES.includes(node.type)) {
+    node.attrs = { ...(node.attrs ?? {}) };
+    if (!node.attrs.pid) node.attrs.pid = newPid();
+  }
+  node.content?.forEach(ensurePids);
 }
 
 // プレビューは閲覧ページと同じスキーマから同じ HTML を生成する

@@ -21,8 +21,20 @@ export function validateDoc(input: unknown): JSONContent {
   return node.toJSON() as JSONContent;
 }
 
-export function docToHTML(doc: JSONContent): string {
-  return generateHTML(doc, extensions);
+export function docToHTML(doc: JSONContent, readLevels?: Record<string, number>): string {
+  const withReads = readLevels && Object.keys(readLevels).length > 0 ? injectReads(doc, readLevels) : doc;
+  return generateHTML(withReads, extensions);
+}
+
+// 段落 ID ごとの「読まれた段階」を属性として差し込む（描画時だけ。保存はしない）
+function injectReads(node: JSONContent, levels: Record<string, number>): JSONContent {
+  const pid = node.attrs?.pid as string | undefined;
+  const reads = pid ? levels[pid] : undefined;
+  return {
+    ...node,
+    attrs: reads ? { ...node.attrs, reads } : node.attrs,
+    content: node.content?.map((c) => injectReads(c, levels)),
+  };
 }
 
 export function docToText(doc: JSONContent): string {

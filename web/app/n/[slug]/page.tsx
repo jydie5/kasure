@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense, ViewTransition } from "react";
 import { notFound } from "next/navigation";
-import { getNoteBySlug } from "@/lib/notes";
+import { getNoteBySlug, getReadLevels } from "@/lib/notes";
+import { ReadTracker, TraceAge } from "@/components/trace";
 import { getViewer } from "@/lib/auth";
 import { Markdown } from "@/components/markdown";
 import { docToHTML } from "@/lib/render-doc";
@@ -37,6 +38,8 @@ async function NoteView({ params }: { params: PageProps<"/n/[slug]">["params"] }
   if (note.visibility !== "public" && !isOwner) notFound();
 
   const accentVar = `var(--${note.accent === "sumi" ? "ink" : note.accent})`;
+  const readLevels = note.doc && note.visibility === "public" ? await getReadLevels(note.id) : undefined;
+  const hasTrace = Boolean(note.doc && JSON.stringify(note.doc).includes('"pid"'));
 
   return (
     <div style={{ "--accent": accentVar } as React.CSSProperties}>
@@ -72,13 +75,29 @@ async function NoteView({ params }: { params: PageProps<"/n/[slug]">["params"] }
         <hr className="hairline read-rule draw-line" />
         <div className="read-body fade-up" data-writing={note.layout.writing} data-measure={note.layout.measure} style={{ "--d": "0.3s" } as React.CSSProperties}>
           {note.doc ? (
-            <article className="prose" dangerouslySetInnerHTML={{ __html: docToHTML(note.doc) }} />
+            <article className="prose" dangerouslySetInnerHTML={{ __html: docToHTML(note.doc, readLevels) }} />
           ) : (
             <article className="prose">
               <Markdown source={note.body} />
             </article>
           )}
         </div>
+        {hasTrace && (
+          <ul className="trace-legend mono muted" aria-label="跡の見方">
+            <li>
+              <i data-pace="3" className="k-legend">掠</i>速く書いた段落ほど掠れる
+            </li>
+            <li>
+              <i style={{ textShadow: "0.05em 0.04em 0 currentColor" }}>迷</i>書き直した段落は線がぶれる
+            </li>
+            <li>
+              <i style={{ opacity: 0.5 }}>時</i>触れていない段落から薄れる{note.layout.decayDays === 0 ? "（このノートは永久墨）" : ""}
+            </li>
+            <li>
+              <i>読</i>読まれた段落は墨が戻る
+            </li>
+          </ul>
+        )}
         <footer className="read-foot">
           <Link href={isOwner ? "/notes" : "/#public"} className="link-u">
             ← {isOwner ? "ライブラリへ" : "公開ノート一覧へ"}
@@ -94,6 +113,8 @@ async function NoteView({ params }: { params: PageProps<"/n/[slug]">["params"] }
         </footer>
       </div>
       <div style={{ height: "clamp(80px, 12vw, 160px)" }} />
+      {hasTrace && <TraceAge decayDays={note.layout.decayDays} />}
+      {hasTrace && note.visibility === "public" && !isOwner && <ReadTracker noteId={note.id} />}
     </div>
   );
 }
